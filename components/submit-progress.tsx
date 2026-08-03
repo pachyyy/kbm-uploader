@@ -10,6 +10,7 @@ const STATUS_LABEL: Record<SubmitResult["status"], string> = {
   in_progress: "Sending…",
   submitted: "Submitted",
   draft_only: "Draft only — not sent",
+  created_unverified: "Created — check manually",
   failed: "Failed",
 };
 
@@ -18,6 +19,7 @@ const STATUS_VARIANT: Record<SubmitResult["status"], "default" | "secondary" | "
   in_progress: "secondary",
   submitted: "default",
   draft_only: "destructive",
+  created_unverified: "secondary",
   failed: "destructive",
 };
 
@@ -29,7 +31,12 @@ export function SubmitProgress({ results }: SubmitProgressProps) {
   const total = results.length;
   const done = results.filter((r) => r.status !== "pending" && r.status !== "in_progress").length;
   const submitted = results.filter((r) => r.status === "submitted").length;
-  const problems = results.filter((r) => r.status === "draft_only" || r.status === "failed");
+  const problems = results.filter(
+    (r) =>
+      r.status === "draft_only" ||
+      r.status === "failed" ||
+      r.status === "created_unverified"
+  );
 
   return (
     <Card>

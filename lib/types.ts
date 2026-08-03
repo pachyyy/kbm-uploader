@@ -42,6 +42,11 @@ export type SubmitStatus =
   | "in_progress"
   | "submitted"
   | "draft_only"
+  // Store returned 302 (record almost certainly created) but the follow-up
+  // lookup could not find it, so it could not be finalized. Distinct from
+  // "failed" because retrying risks creating a DUPLICATE — this one needs a
+  // manual check in SIDIA, not an automatic resubmit.
+  | "created_unverified"
   | "failed";
 
 export interface SubmitResult {

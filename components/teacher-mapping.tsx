@@ -81,14 +81,20 @@ export function TeacherMapping({ onComplete }: TeacherMappingProps) {
     setAssignments((prev) => {
       const next = { ...prev, [teacherId]: kelompok };
 
-      if (teachers && teachers.every((t) => next[t.id])) {
-        const result: TeacherAssignment[] = teachers.map((t) => ({
-          teacherId: t.id,
-          kelompok: next[t.id] as KelompokName,
-        }));
-        saveTeacherMapping(result);
-        onComplete(teachers, result);
-        toast.success(`${teachers.find((t) => t.id === teacherId)?.name} set to ${kelompok}`);
+      if (!teachers) return next;
+
+      // Persist on every change, not just when all teachers are assigned —
+      // otherwise a half-finished setup is lost entirely if the tab closes.
+      const assigned: TeacherAssignment[] = teachers
+        .filter((t) => next[t.id])
+        .map((t) => ({ teacherId: t.id, kelompok: next[t.id] as KelompokName }));
+      saveTeacherMapping(assigned);
+
+      toast.success(`${teachers.find((t) => t.id === teacherId)?.name} set to ${kelompok}`);
+
+      // The upload flow only becomes usable once every teacher has a class.
+      if (assigned.length === teachers.length) {
+        onComplete(teachers, assigned);
       }
 
       return next;

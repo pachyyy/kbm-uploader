@@ -47,6 +47,11 @@ async function runOnce(form: FormData): Promise<SubmitApiResult> {
     if (storeResult.reason === "session_expired") {
       throw new SessionExpiredError();
     }
+    if (storeResult.reason === "created_but_not_found") {
+      // Not "failed": the record exists. Reporting this as a failure would
+      // invite a retry that creates a duplicate in a government database.
+      return { status: "created_unverified", message: storeResult.detail };
+    }
     return { status: "failed", message: storeResult.detail };
   }
 

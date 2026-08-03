@@ -151,8 +151,13 @@ export default function Home() {
     if (!teachers) return;
     setRunning(true);
 
+    // "created_unverified" counts as done for retry purposes: the record
+    // exists in SIDIA, we just couldn't confirm it. Resubmitting would
+    // create a duplicate, which is worse than a manual check.
     const alreadyDone = new Set(
-      results.filter((r) => r.status === "submitted").map((r) => r.teacherId)
+      results
+        .filter((r) => r.status === "submitted" || r.status === "created_unverified")
+        .map((r) => r.teacherId)
     );
 
     const queue = readyTeachers
@@ -164,7 +169,11 @@ export default function Home() {
 
     const initial: SubmitResult[] = readyTeachers.map((t) => {
       const existing = results.find((r) => r.teacherId === t.id);
-      if (existing?.status === "submitted") return existing;
+      // Preserve both terminal-success states so their result (and the
+      // "check manually" message) survives a retry run.
+      if (existing?.status === "submitted" || existing?.status === "created_unverified") {
+        return existing;
+      }
       return {
         teacherId: t.id,
         teacherName: t.name,

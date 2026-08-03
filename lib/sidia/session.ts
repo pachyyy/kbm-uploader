@@ -128,11 +128,26 @@ export function invalidateSession() {
 }
 
 /**
- * Fetches /jadwal/create and returns a fresh CSRF token bound to the
- * current session. Laravel's token is stateful, so this must be re-read
- * before every store/kirim_ke_penyuluh call rather than reused from login.
+ * Identity fields that /jadwal/create renders pre-filled (npsn, nama,
+ * kecamatan). The store controller expects them back; omitting them makes
+ * SIDIA return a 500. They're per-account, so scrape rather than hardcode.
  */
-export async function refreshCsrfToken(session: SessionState): Promise<string> {
+export interface CreateFormContext {
+  token: string;
+  npsn: string;
+  nama: string;
+  kecamatan: string;
+}
+
+/**
+ * Fetches /jadwal/create and returns a fresh CSRF token plus the pre-filled
+ * identity fields, both bound to the current session. Laravel's token is
+ * stateful, so this must be re-read before every store/kirim_ke_penyuluh
+ * call rather than reused from login.
+ */
+export async function fetchCreateFormContext(
+  session: SessionState
+): Promise<CreateFormContext> {
   const res = await fetch(SIDIA_URLS.create, {
     redirect: "manual",
     headers: {
@@ -156,7 +171,33 @@ export async function refreshCsrfToken(session: SessionState): Promise<string> {
 
   const token = scrapeCsrfToken(html);
   session.csrfToken = token;
-  return token;
+
+  const $ = cheerio.load(html);
+  const form = $("form")
+    .filter((_, el) => ($(el).attr("action") || "").includes("/jadwal/store"))
+    .first();
+  const fieldValue = (name: string) =>
+    (form.find(`[name="${name}"]`).attr("value") ?? "").trim();
+
+  const context: CreateFormContext = {
+    token,
+    npsn: fieldValue("npsn"),
+    nama: fieldValue("nama"),
+    kecamatan: fieldValue("kecamatan"),
+  };
+
+  if (!context.npsn || !context.nama) {
+    throw new Error(
+      "Could not read npsn/nama from the create form — SIDIA's form layout may have changed."
+    );
+  }
+
+  return context;
+}
+
+/** Back-compat wrapper for callers that only need the token. */
+export async function refreshCsrfToken(session: SessionState): Promise<string> {
+  return (await fetchCreateFormContext(session)).token;
 }
 
 export { cookieHeader, mergeSetCookies, isLoginPage, USER_AGENT };

@@ -3,46 +3,46 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import type { SubmitResult } from "@/lib/types";
+import type { DraftResult } from "@/lib/types";
 
-const STATUS_LABEL: Record<SubmitResult["status"], string> = {
+const STATUS_LABEL: Record<DraftResult["status"], string> = {
   pending: "Waiting",
-  in_progress: "Sending…",
-  submitted: "Submitted",
-  draft_only: "Draft only — not sent",
-  created_unverified: "Created — check manually",
+  in_progress: "Saving…",
+  drafted: "Draft saved",
+  unconfirmed: "Unknown — check Riwayat",
   failed: "Failed",
 };
 
-const STATUS_VARIANT: Record<SubmitResult["status"], "default" | "secondary" | "destructive" | "outline"> = {
+const STATUS_VARIANT: Record<
+  DraftResult["status"],
+  "default" | "secondary" | "destructive" | "outline"
+> = {
   pending: "outline",
   in_progress: "secondary",
-  submitted: "default",
-  draft_only: "destructive",
-  created_unverified: "secondary",
+  drafted: "default",
+  unconfirmed: "secondary",
   failed: "destructive",
 };
 
-interface SubmitProgressProps {
-  results: SubmitResult[];
+interface DraftProgressProps {
+  results: DraftResult[];
 }
 
-export function SubmitProgress({ results }: SubmitProgressProps) {
+export function DraftProgress({ results }: DraftProgressProps) {
   const total = results.length;
-  const done = results.filter((r) => r.status !== "pending" && r.status !== "in_progress").length;
-  const submitted = results.filter((r) => r.status === "submitted").length;
+  const done = results.filter(
+    (r) => r.status !== "pending" && r.status !== "in_progress"
+  ).length;
+  const drafted = results.filter((r) => r.status === "drafted").length;
   const problems = results.filter(
-    (r) =>
-      r.status === "draft_only" ||
-      r.status === "failed" ||
-      r.status === "created_unverified"
+    (r) => r.status === "failed" || r.status === "unconfirmed"
   );
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
-          Submitting {done}/{total} — {submitted} confirmed sent
+          Saving drafts {done}/{total} — {drafted} saved
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -60,9 +60,7 @@ export function SubmitProgress({ results }: SubmitProgressProps) {
               <div>
                 <div className="font-medium">{r.teacherName}</div>
                 <div className="text-xs text-muted-foreground">{r.kelompok}</div>
-                {r.message && (
-                  <div className="text-xs text-destructive">{r.message}</div>
-                )}
+                {r.message && <div className="text-xs text-destructive">{r.message}</div>}
               </div>
               <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>
             </div>

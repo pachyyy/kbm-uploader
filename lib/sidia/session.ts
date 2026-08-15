@@ -128,6 +128,43 @@ export function invalidateSession() {
 }
 
 /**
+ * Thrown when SIDIA has dropped the cached session. The literal message is
+ * load-bearing: parts of the client signal expiry by throwing a plain Error
+ * with this text, and withSession() treats both forms alike.
+ */
+export class SessionExpiredError extends Error {
+  constructor() {
+    super("SIDIA_SESSION_EXPIRED");
+    this.name = "SessionExpiredError";
+  }
+}
+
+function isSessionExpired(err: unknown): boolean {
+  return err instanceof Error && err.message === "SIDIA_SESSION_EXPIRED";
+}
+
+/**
+ * Runs `fn` against a live session, retrying it once against a fresh login if
+ * the cached session turns out to be dead. Every SIDIA-backed route goes
+ * through this — the module-level session cache is shared across warm
+ * invocations, so any request can be the one that discovers it has expired.
+ *
+ * `fn` must be safe to run twice: a second expiry propagates the error rather
+ * than looping.
+ */
+export async function withSession<T>(
+  fn: (session: SessionState) => Promise<T>
+): Promise<T> {
+  try {
+    return await fn(await getSession());
+  } catch (err) {
+    if (!isSessionExpired(err)) throw err;
+    invalidateSession();
+    return fn(await getSession());
+  }
+}
+
+/**
  * Identity fields that /jadwal/create renders pre-filled (npsn, nama,
  * kecamatan). The store controller expects them back; omitting them makes
  * SIDIA return a 500. They're per-account, so scrape rather than hardcode.

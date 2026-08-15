@@ -37,23 +37,50 @@ export interface TeacherPhotos {
   foto3: File | null;
 }
 
-export type SubmitStatus =
+export type DraftStatus =
   | "pending"
   | "in_progress"
-  | "submitted"
-  | "draft_only"
-  // Store returned 302 (record almost certainly created) but the follow-up
-  // lookup could not find it, so it could not be finalized. Distinct from
-  // "failed" because retrying risks creating a DUPLICATE — this one needs a
-  // manual check in SIDIA, not an automatic resubmit.
-  | "created_unverified"
+  | "drafted"
+  // The request never came back cleanly (network drop, timeout), so whether
+  // SIDIA stored the record is genuinely unknown. Distinct from "failed"
+  // because retrying risks creating a DUPLICATE — check Riwayat for the date
+  // instead of resubmitting.
+  | "unconfirmed"
+  // SIDIA actively rejected it and created nothing. Safe to retry.
   | "failed";
 
-export interface SubmitResult {
+export interface DraftResult {
   teacherId: string;
   teacherName: string;
   kelompok: KelompokName;
-  status: SubmitStatus;
+  status: DraftStatus;
   message?: string;
-  uuid?: string;
+}
+
+export interface SendResult {
+  uuid: string;
+  namaPendidik: string;
+  kelompok: string;
+  ok: boolean;
+  message?: string;
+}
+
+/** One KBM record as SIDIA reports it back, cleaned of markup. */
+export interface SidiaEntry {
+  uuid: string;
+  tanggal: string; // yyyy-mm-dd
+  tglLong: string; // e.g. "Minggu, 09 Agustus 2026"
+  namaPendidik: string;
+  kelompok: string;
+  jenisPembelajaran: string;
+  status: string; // plain text, e.g. "Draft" / "Verifikasi Penyuluh"
+  isDraft: boolean;
+}
+
+export interface EntryGroup {
+  tanggal: string;
+  tglLong: string;
+  total: number;
+  draftCount: number;
+  entries: SidiaEntry[];
 }

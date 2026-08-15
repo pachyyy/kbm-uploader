@@ -1,17 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ClassTextForm } from "@/components/class-text-form";
+import { DatePicker } from "@/components/date-picker";
+import { DraftProgress } from "@/components/draft-progress";
 import { PhotoSlot } from "@/components/photo-slot";
-import { SubmitProgress } from "@/components/submit-progress";
+import { SendResults, SendToPenyuluh } from "@/components/send-to-penyuluh";
 import type { CompressResult } from "@/lib/compress";
-import type { ClassText, KelompokName, SubmitResult, Teacher, TeacherAssignment } from "@/lib/types";
+import { formatLongDate, sundayOfWeek, toYmd } from "@/lib/dates";
+import type {
+  ClassText,
+  DraftResult,
+  KelompokName,
+  SendResult,
+  SidiaEntry,
+  Teacher,
+  TeacherAssignment,
+} from "@/lib/types";
 import { KELOMPOK_LIST } from "@/lib/types";
 import {
   emptyClassTextSet,
@@ -32,13 +42,24 @@ export default function Home() {
   const [teachers, setTeachers] = useState<Teacher[] | null>(null);
   const [assignments, setAssignments] = useState<TeacherAssignment[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [date, setDate] = useState("");
+  // Left undefined for the server render and filled in on mount, for the same
+  // reason as the localStorage state above: "this week's Sunday" depends on the
+  // viewer's timezone, and the server (UTC on Vercel) would compute a different
+  // day from a WIB client late at night.
+  const [date, setDate] = useState<Date | undefined>(undefined);
   const [classText, setClassText] = useState<Record<KelompokName, ClassText>>(
     emptyClassTextSet
   );
   const [photos, setPhotos] = useState<PhotoState>({});
-  const [results, setResults] = useState<SubmitResult[]>([]);
+  const [results, setResults] = useState<DraftResult[]>([]);
   const [running, setRunning] = useState(false);
+  // Drafts SIDIA holds for a given date, tagged with the date they were read
+  // for. The tag matters: switching dates mid-request would otherwise let a
+  // slow response paint the old date's drafts under the new one.
+  const [draftState, setDraftState] = useState<
+    { tanggal: string; drafts: SidiaEntry[]; error?: string } | null
+  >(null);
+  const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
 
   useEffect(() => {
     // One-time hydration from localStorage on mount (deliberately not a
@@ -52,6 +73,9 @@ export default function Home() {
       setAssignments(getTeacherMapping());
     }
     setClassText(getLastClassText() ?? emptyClassTextSet());
+    // Default to the Sunday whose class is being reported: the one that just
+    // passed, or today when today is itself a Sunday.
+    setDate(sundayOfWeek(new Date()));
 
     fetch("/api/teachers")
       .then((res) => {
@@ -68,6 +92,36 @@ export default function Home() {
         setLoadError((prev) => prev ?? (err as Error).message);
       });
   }, []);
+
+  const tanggal = date ? toYmd(date) : null;
+
+  // What SIDIA still holds as a draft for this date is the only thing the send
+  // button can trust: drafts may have been created in an earlier session, on
+  // another device, or directly in SIDIA.
+  const refreshDrafts = useCallback(async () => {
+    if (!tanggal) return;
+    try {
+      const res = await fetch(`/api/drafts?tanggal=${tanggal}`);
+      const data = (await res.json()) as { drafts?: SidiaEntry[]; error?: string };
+      if (!res.ok || !data.drafts) throw new Error(data.error ?? `Server returned ${res.status}`);
+      setDraftState({ tanggal, drafts: data.drafts });
+    } catch (err) {
+      setDraftState({ tanggal, drafts: [], error: (err as Error).message });
+    }
+  }, [tanggal]);
+
+  useEffect(() => {
+    // refreshDrafts only sets state after awaiting the fetch, never
+    // synchronously — the rule just can't see past the await boundary.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshDrafts();
+  }, [refreshDrafts]);
+
+  // null while the current date's drafts are unknown, so the send button says
+  // "checking" and stays disabled instead of claiming there are none.
+  const current = draftState?.tanggal === tanggal ? draftState : null;
+  const drafts = current && !current.error ? current.drafts : null;
+  const draftsError = current?.error ?? null;
 
   const mappingDone =
     teachers !== null &&
@@ -100,8 +154,8 @@ export default function Home() {
     });
   }, [teachers, photos]);
 
-  const canSubmit =
-    date.length > 0 &&
+  const canDraft =
+    date !== undefined &&
     mappingDone &&
     readyTeachers.length > 0 &&
     KELOMPOK_LIST.every((k) => {
@@ -111,11 +165,15 @@ export default function Home() {
       return t.jenisPembelajaran && t.materi && t.catatan;
     });
 
-  async function submitOne(teacher: Teacher, kelompok: KelompokName): Promise<SubmitResult> {
+  async function draftOne(
+    teacher: Teacher,
+    kelompok: KelompokName,
+    forDate: string
+  ): Promise<DraftResult> {
     const p = photos[teacher.id];
     const text = classText[kelompok];
     const form = new FormData();
-    form.set("tanggal", date);
+    form.set("tanggal", forDate);
     form.set("pendidikId", teacher.id);
     form.set("kelompok", kelompok);
     form.set("jenisPembelajaran", text.jenisPembelajaran);
@@ -125,38 +183,38 @@ export default function Home() {
     form.set("foto2", p!.foto2!.blob, "foto2.jpg");
     form.set("foto3", p!.foto3!.blob, "foto3.jpg");
 
+    const base = { teacherId: teacher.id, teacherName: teacher.name, kelompok };
+
     try {
-      const res = await fetch("/api/submit", { method: "POST", body: form });
-      const data = (await res.json()) as { status: SubmitResult["status"]; message?: string; uuid?: string };
-      return {
-        teacherId: teacher.id,
-        teacherName: teacher.name,
-        kelompok,
-        status: data.status,
-        message: data.message,
-        uuid: data.uuid,
-      };
+      const res = await fetch("/api/draft", { method: "POST", body: form });
+      const data = (await res.json()) as { status: DraftResult["status"]; message?: string };
+      return { ...base, status: data.status, message: data.message };
     } catch (err) {
+      // The request itself never completed, so SIDIA may or may not have
+      // stored the record. Never call this "failed" — that reads as safe to
+      // retry, and a retry here can duplicate the entry.
       return {
-        teacherId: teacher.id,
-        teacherName: teacher.name,
-        kelompok,
-        status: "failed",
-        message: (err as Error).message,
+        ...base,
+        status: "unconfirmed",
+        message: `${(err as Error).message}. Check Riwayat for this date before retrying — this teacher may already have a draft.`,
       };
     }
   }
 
-  async function handleSubmitAll() {
-    if (!teachers) return;
+  async function handleDraftAll() {
+    if (!teachers || !tanggal) return;
+    // Snapshot the date once, so every teacher in the run is filed under the
+    // same day even if the picker changes mid-run.
+    const forDate = tanggal;
     setRunning(true);
+    setSendResults(null);
 
-    // "created_unverified" counts as done for retry purposes: the record
-    // exists in SIDIA, we just couldn't confirm it. Resubmitting would
-    // create a duplicate, which is worse than a manual check.
+    // "unconfirmed" counts as done for retry purposes: the record may well
+    // exist in SIDIA, and a second attempt would duplicate it. Those get
+    // resolved by looking at Riwayat, not by clicking again.
     const alreadyDone = new Set(
       results
-        .filter((r) => r.status === "submitted" || r.status === "created_unverified")
+        .filter((r) => r.status === "drafted" || r.status === "unconfirmed")
         .map((r) => r.teacherId)
     );
 
@@ -167,11 +225,11 @@ export default function Home() {
         kelompok: assignments.find((a) => a.teacherId === t.id)!.kelompok,
       }));
 
-    const initial: SubmitResult[] = readyTeachers.map((t) => {
+    const initial: DraftResult[] = readyTeachers.map((t) => {
       const existing = results.find((r) => r.teacherId === t.id);
-      // Preserve both terminal-success states so their result (and the
-      // "check manually" message) survives a retry run.
-      if (existing?.status === "submitted" || existing?.status === "created_unverified") {
+      // Preserve both terminal states so their result (and the "check Riwayat"
+      // message) survives a retry run.
+      if (existing?.status === "drafted" || existing?.status === "unconfirmed") {
         return existing;
       }
       return {
@@ -187,12 +245,20 @@ export default function Home() {
       setResults((prev) =>
         prev.map((r) => (r.teacherId === teacher.id ? { ...r, status: "in_progress" } : r))
       );
-      const result = await submitOne(teacher, kelompok);
+      const result = await draftOne(teacher, kelompok, forDate);
       setResults((prev) => prev.map((r) => (r.teacherId === teacher.id ? result : r)));
     }
 
     saveLastClassText(classText);
     setRunning(false);
+    // Drafts just changed on SIDIA's side — re-read so the send button's count
+    // reflects them rather than what this page assumed it created.
+    await refreshDrafts();
+  }
+
+  function handleSent(sent: SendResult[]) {
+    setSendResults(sent);
+    void refreshDrafts();
   }
 
   return (
@@ -234,7 +300,7 @@ export default function Home() {
             <CardContent>
               <div className="max-w-xs space-y-1.5">
                 <Label htmlFor="tanggal">Tanggal (applies to all teachers)</Label>
-                <Input id="tanggal" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <DatePicker id="tanggal" value={date} onChange={setDate} />
               </div>
             </CardContent>
           </Card>
@@ -274,13 +340,56 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          <Button disabled={!canSubmit || running} onClick={handleSubmitAll} className="w-full" size="lg">
-            {running
-              ? "Submitting…"
-              : `Submit ${readyTeachers.length} teacher${readyTeachers.length === 1 ? "" : "s"}`}
-          </Button>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Submit</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Step 1 uploads the photos and text as drafts. Check them in SIDIA or Riwayat,
+                then step 2 sends everything still in draft for this date to the penyuluh.
+              </p>
 
-          {results.length > 0 && <SubmitProgress results={results} />}
+              <Button
+                disabled={!canDraft || running}
+                onClick={handleDraftAll}
+                className="w-full"
+                size="lg"
+              >
+                {running
+                  ? "Saving drafts…"
+                  : `Save ${readyTeachers.length} draft${readyTeachers.length === 1 ? "" : "s"}`}
+              </Button>
+
+              <SendToPenyuluh
+                tanggal={tanggal ?? ""}
+                dateLabel={date ? formatLongDate(date) : ""}
+                drafts={running ? null : drafts}
+                onSent={handleSent}
+                size="lg"
+                className="w-full"
+              />
+
+              {draftsError && (
+                <p className="text-sm text-destructive">
+                  Could not check for drafts: {draftsError}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {results.length > 0 && <DraftProgress results={results} />}
+
+          {sendResults && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Sent to penyuluh</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SendResults results={sendResults} />
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>

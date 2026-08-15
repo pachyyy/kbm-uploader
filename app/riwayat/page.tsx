@@ -1,19 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { ChevronRightIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-
-interface HistoryRow {
-  uuid: string;
-  tanggal: string;
-  tgl_long: string;
-  nama_pendidik: string;
-  kelompok: string;
-  jenis_pembelajaran: string;
-  status: string;
-}
+import { SendResults, SendToPenyuluh } from "@/components/send-to-penyuluh";
+import type { EntryGroup, SendResult } from "@/lib/types";
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   const s = status.toLowerCase();
@@ -23,59 +23,132 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
 }
 
 export default function Riwayat() {
-  const [rows, setRows] = useState<HistoryRow[] | null>(null);
+  const [groups, setGroups] = useState<EntryGroup[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The date whose modal is open, kept as a key rather than the group object
+  // so the modal follows the refreshed data after a send.
+  const [openDate, setOpenDate] = useState<string | null>(null);
+  const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/history");
+      const data = (await res.json()) as { groups?: EntryGroup[]; error?: string };
+      if (!res.ok || !data.groups) throw new Error(data.error ?? `Server returned ${res.status}`);
+      setGroups(data.groups);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
 
   useEffect(() => {
-    fetch("/api/history")
-      .then((res) => {
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
-        return res.json();
-      })
-      .then((data: { rows: HistoryRow[] }) => setRows(data.rows))
-      .catch((err) => setError((err as Error).message));
-  }, []);
+    // load only sets state after awaiting the fetch, never synchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  const openGroup = groups?.find((g) => g.tanggal === openDate) ?? null;
+
+  function handleSent(results: SendResult[]) {
+    setSendResults(results);
+    void load();
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-8">
       <div>
         <h1 className="text-2xl font-bold">Riwayat</h1>
-        <p className="text-sm text-muted-foreground">Recent SIDIA submissions</p>
+        <p className="text-sm text-muted-foreground">Recent SIDIA submissions by date</p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Recent SIDIA submissions</CardTitle>
+          <CardTitle className="text-base">Submission dates</CardTitle>
         </CardHeader>
         <CardContent>
           {error && <p className="text-sm text-destructive">Could not load history: {error}</p>}
-          {!rows && !error && (
+
+          {!groups && !error && (
             <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
           )}
-          {rows && rows.length === 0 && (
+
+          {groups && groups.length === 0 && (
             <p className="text-sm text-muted-foreground">No entries found.</p>
           )}
-          {rows && rows.length > 0 && (
+
+          {groups && groups.length > 0 && (
             <div className="divide-y rounded-md border">
-              {rows.map((r) => (
-                <div key={r.uuid} className="flex items-center justify-between gap-3 p-2.5 text-sm">
+              {groups.map((g) => (
+                <button
+                  key={g.tanggal}
+                  type="button"
+                  onClick={() => {
+                    setSendResults(null);
+                    setOpenDate(g.tanggal);
+                  }}
+                  className="flex w-full items-center justify-between gap-3 p-2.5 text-left text-sm hover:bg-muted"
+                >
                   <div>
-                    <div className="font-medium">{r.nama_pendidik}</div>
+                    <div className="font-medium">{g.tglLong}</div>
                     <div className="text-xs text-muted-foreground">
-                      {r.tgl_long} · {r.kelompok} · {r.jenis_pembelajaran}
+                      {g.total} {g.total === 1 ? "entry" : "entries"}
                     </div>
                   </div>
-                  <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
-                </div>
+                  <div className="flex items-center gap-2">
+                    {g.draftCount > 0 && (
+                      <Badge variant="destructive">{g.draftCount} draft</Badge>
+                    )}
+                    <ChevronRightIcon className="size-4 text-muted-foreground" />
+                  </div>
+                </button>
               ))}
             </div>
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={openGroup !== null} onOpenChange={(next) => !next && setOpenDate(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{openGroup?.tglLong}</DialogTitle>
+            <DialogDescription>
+              {openGroup?.total} {openGroup?.total === 1 ? "entry" : "entries"}
+              {openGroup && openGroup.draftCount > 0 && ` · ${openGroup.draftCount} still draft`}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-80 divide-y overflow-y-auto rounded-md border text-sm">
+            {openGroup?.entries.map((e) => (
+              <div key={e.uuid} className="flex items-center justify-between gap-3 p-2.5">
+                <div>
+                  <div className="font-medium">{e.namaPendidik}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {e.kelompok} · {e.jenisPembelajaran}
+                  </div>
+                </div>
+                <Badge variant={statusVariant(e.status)}>{e.status}</Badge>
+              </div>
+            ))}
+          </div>
+
+          {sendResults && <SendResults results={sendResults} />}
+
+          {openGroup && openGroup.draftCount > 0 && (
+            <SendToPenyuluh
+              tanggal={openGroup.tanggal}
+              dateLabel={openGroup.tglLong}
+              drafts={openGroup.entries.filter((e) => e.isDraft)}
+              onSent={handleSent}
+              className="w-full"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

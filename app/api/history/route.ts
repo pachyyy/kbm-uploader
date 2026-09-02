@@ -2,9 +2,14 @@ import { NextResponse } from "next/server";
 import { withSession } from "@/lib/sidia/session";
 import { fetchEntries, groupByDate } from "@/lib/sidia/entries";
 
-// Half a year of Sundays. Enough to look back over a term without shipping
-// the school's entire history to the browser on every page load.
-const MAX_DATES = 26;
+// The five most recent dates that have entries — roughly the last five weeks
+// of classes, and counted in dates rather than calendar days so a skipped
+// Sunday (libur) doesn't quietly shrink the list to four.
+//
+// This trims the response to the browser, not the read from SIDIA: ajax_index
+// returns rows in arbitrary order with no usable date filter, so the full
+// table still has to be pulled and sliced here. See fetchEntries.
+const MAX_DATES = 5;
 
 export async function GET() {
   try {

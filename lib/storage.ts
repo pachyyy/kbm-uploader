@@ -51,7 +51,8 @@ export function saveCachedTeachers(teachers: Teacher[]) {
   writeJson(KEYS.cachedTeachers, teachers);
 }
 
-// --- Last week's per-class text, used to prefill the form ---
+// --- Per-class text. Saved on every keystroke so a refresh doesn't lose it,
+// and read back on mount — which doubles as the prefill from last week ---
 
 export function getLastClassText(): Record<KelompokName, ClassText> | null {
   return readJson<Record<KelompokName, ClassText>>(KEYS.lastClassText);

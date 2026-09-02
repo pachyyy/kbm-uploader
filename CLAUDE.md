@@ -95,3 +95,7 @@ The one exception is `components/ui/calendar.tsx`, which wraps **react-day-picke
 ## Domain vocabulary
 
 Indonesian field names are kept verbatim from SIDIA and should not be translated in code: `tanggal` (date), `pendidik_id` (teacher id), `kelompok` (class group), `jenis_pembelajaran` (lesson type), `materi` (material), `catatan` (notes), `foto1..3`, `penyuluh` (supervisor who verifies), `riwayat` (history). The five `kelompok` values are fixed in `KELOMPOK_LIST`.
+
+## Notes & gotchas
+- Do not make any changes until you have 95% confidence in what you need to build. Ask me follow-up questions until you reach that confidence.
+- After all edits, always tell me what files have been changed.

@@ -26,9 +26,15 @@ const STATUS_VARIANT: Record<
 
 interface DraftProgressProps {
   results: DraftResult[];
+  /**
+   * The teacher the run is currently pacing towards, and the seconds left
+   * before their submission starts. Display only — a paced teacher is still
+   * "pending", so nothing here changes what a retry considers done.
+   */
+  waiting?: { teacherId: string; secondsLeft: number } | null;
 }
 
-export function DraftProgress({ results }: DraftProgressProps) {
+export function DraftProgress({ results, waiting }: DraftProgressProps) {
   const total = results.length;
   const done = results.filter(
     (r) => r.status !== "pending" && r.status !== "in_progress"
@@ -55,16 +61,22 @@ export function DraftProgress({ results }: DraftProgressProps) {
         )}
 
         <div className="divide-y rounded-md border">
-          {results.map((r) => (
+          {results.map((r) => {
+            const counting =
+              r.status === "pending" && waiting?.teacherId === r.teacherId ? waiting : null;
+            return (
             <div key={r.teacherId} className="flex items-center justify-between gap-3 p-2.5 text-sm">
               <div>
                 <div className="font-medium">{r.teacherName}</div>
                 <div className="text-xs text-muted-foreground">{r.kelompok}</div>
                 {r.message && <div className="text-xs text-destructive">{r.message}</div>}
               </div>
-              <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>
+              <Badge variant={counting ? "secondary" : STATUS_VARIANT[r.status]}>
+                {counting ? `Next in ${counting.secondsLeft}s…` : STATUS_LABEL[r.status]}
+              </Badge>
             </div>
-          ))}
+            );
+          })}
         </div>
       </CardContent>
     </Card>

@@ -109,6 +109,15 @@ export default function Riwayat() {
               ))}
             </div>
           )}
+
+          {groups && groups.length > 0 && (
+            // Derived from what came back rather than hardcoded, so it stays
+            // honest if the server-side cap changes.
+            <p className="pt-2 text-xs text-muted-foreground">
+              Showing the {groups.length} most recent submission {groups.length === 1 ? "date" : "dates"}.
+              Older entries are still in SIDIA.
+            </p>
+          )}
         </CardContent>
       </Card>
 

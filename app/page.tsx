@@ -34,6 +34,16 @@ import {
 
 type PhotoState = Record<string, { foto1: CompressResult | null; foto2: CompressResult | null; foto3: CompressResult | null }>;
 
+/**
+ * Pause between two consecutive `/api/draft` submissions, in milliseconds.
+ * SIDIA is a shared government Laravel app and drops drafts that arrive back
+ * to back; spacing the writes out trades run time for a lower chance of a
+ * silent loss. Change this one number to retune the pacing.
+ */
+const DELAY_PENGIRIMAN = 5000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export default function Home() {
   // Starts null on both server and first client render (even though
   // localStorage may already have data) so the two don't disagree and
@@ -60,6 +70,12 @@ export default function Home() {
     { tanggal: string; drafts: SidiaEntry[]; error?: string } | null
   >(null);
   const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
+  // Purely cosmetic: which teacher the run is currently pacing towards, and
+  // how many seconds are left. Kept out of DraftResult so the countdown can
+  // never be mistaken for a real draft status.
+  const [waiting, setWaiting] = useState<{ teacherId: string; secondsLeft: number } | null>(
+    null
+  );
 
   useEffect(() => {
     // One-time hydration from localStorage on mount (deliberately not a
@@ -136,7 +152,14 @@ export default function Home() {
   }, [assignments]);
 
   function updateClassText(kelompok: KelompokName, patch: Partial<ClassText>) {
-    setClassText((prev) => ({ ...prev, [kelompok]: { ...prev[kelompok], ...patch } }));
+    const next = { ...classText, [kelompok]: { ...classText[kelompok], ...patch } };
+    setClassText(next);
+    // Persist on every keystroke rather than only after a successful run —
+    // otherwise a refresh (or an accidental back) mid-typing loses the text.
+    // Written here instead of in an effect on classText: the mount effect that
+    // loads the saved text commits after the first render, so an effect would
+    // race it and overwrite storage with the empty set.
+    saveLastClassText(next);
   }
 
   function setPhoto(teacherId: string, slot: "foto1" | "foto2" | "foto3", result: CompressResult | null) {
@@ -201,6 +224,18 @@ export default function Home() {
     }
   }
 
+  /** Waits DELAY_PENGIRIMAN, ticking a visible countdown on the next teacher. */
+  async function pauseBefore(nextTeacherId: string) {
+    const endsAt = Date.now() + DELAY_PENGIRIMAN;
+    let remaining = DELAY_PENGIRIMAN;
+    while (remaining > 0) {
+      setWaiting({ teacherId: nextTeacherId, secondsLeft: Math.ceil(remaining / 1000) });
+      await sleep(Math.min(1000, remaining));
+      remaining = endsAt - Date.now();
+    }
+    setWaiting(null);
+  }
+
   async function handleDraftAll() {
     if (!teachers || !tanggal) return;
     // Snapshot the date once, so every teacher in the run is filed under the
@@ -241,15 +276,20 @@ export default function Home() {
     });
     setResults(initial);
 
-    for (const { teacher, kelompok } of queue) {
+    for (const [i, { teacher, kelompok }] of queue.entries()) {
       setResults((prev) =>
         prev.map((r) => (r.teacherId === teacher.id ? { ...r, status: "in_progress" } : r))
       );
       const result = await draftOne(teacher, kelompok, forDate);
       setResults((prev) => prev.map((r) => (r.teacherId === teacher.id ? result : r)));
+
+      // Space the writes out — but only between teachers, never after the
+      // last one, which would just stall the run at the finish line.
+      const next = queue[i + 1];
+      if (next) await pauseBefore(next.teacher.id);
     }
 
-    saveLastClassText(classText);
+    setWaiting(null);
     setRunning(false);
     // Drafts just changed on SIDIA's side — re-read so the send button's count
     // reflects them rather than what this page assumed it created.
@@ -378,7 +418,7 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {results.length > 0 && <DraftProgress results={results} />}
+          {results.length > 0 && <DraftProgress results={results} waiting={waiting} />}
 
           {sendResults && (
             <Card>

@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { SessionExpiredError, withSession } from "@/lib/sidia/session";
 import { storeEntry } from "@/lib/sidia/submit";
-import type { DraftStatus } from "@/lib/types";
+import type { SubmitStatus } from "@/lib/types";
 
 export const maxDuration = 60; // Vercel Pro ceiling; one teacher must fit well inside this
 
 interface DraftApiResult {
-  status: DraftStatus;
+  status: SubmitStatus;
   message?: string;
 }
 
@@ -69,14 +69,26 @@ export async function POST(req: Request) {
     });
 
     if (!outcome.ok) {
-      // Only reachable with reason "rejected" — SIDIA validated and refused,
-      // so nothing was created and retrying is safe.
+      // The POST went out but its fate is unknown (dropped connection, SIDIA
+      // 5xx). Reporting "failed" here would invite a retry that duplicates a
+      // government record, so say so honestly.
+      if (outcome.reason === "unconfirmed") {
+        return NextResponse.json(
+          { status: "unconfirmed", message: outcome.detail } satisfies DraftApiResult,
+          { status: 502 }
+        );
+      }
+      // Only "rejected" remains — SIDIA validated and refused, so nothing was
+      // created and retrying is safe.
       const detail = outcome.reason === "rejected" ? outcome.detail : "Session expired.";
       return NextResponse.json({ status: "failed", message: detail } satisfies DraftApiResult);
     }
 
     return NextResponse.json({ status: "drafted" } satisfies DraftApiResult);
   } catch (err) {
+    // Safe to call "failed": storeEntry never throws once the POST has been
+    // sent (it returns "unconfirmed" instead), so anything caught here —
+    // login, form-context scraping — happened before SIDIA saw the entry.
     return NextResponse.json(
       { status: "failed", message: (err as Error).message } satisfies DraftApiResult,
       { status: 502 }

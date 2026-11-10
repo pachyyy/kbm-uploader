@@ -10,9 +10,16 @@ interface ClassTextFormProps {
   value: Record<KelompokName, ClassText>;
   onChange: (kelompok: KelompokName, patch: Partial<ClassText>) => void;
   teacherCounts: Record<KelompokName, number>;
+  /** Frozen while a draft run is in flight. */
+  disabled?: boolean;
 }
 
-export function ClassTextForm({ value, onChange, teacherCounts }: ClassTextFormProps) {
+export function ClassTextForm({
+  value,
+  onChange,
+  teacherCounts,
+  disabled = false,
+}: ClassTextFormProps) {
   return (
     <div className="space-y-4">
       {KELOMPOK_LIST.map((kelompok) => (
@@ -31,6 +38,7 @@ export function ClassTextForm({ value, onChange, teacherCounts }: ClassTextFormP
               <Input
                 id={`${kelompok}-metode`}
                 placeholder="Ex: Tilawati/Iqra'/Tahfidz/Dll"
+                disabled={disabled}
                 value={value[kelompok]?.jenisPembelajaran ?? ""}
                 onChange={(e) => onChange(kelompok, { jenisPembelajaran: e.target.value })}
               />
@@ -40,6 +48,7 @@ export function ClassTextForm({ value, onChange, teacherCounts }: ClassTextFormP
               <Textarea
                 id={`${kelompok}-materi`}
                 rows={3}
+                disabled={disabled}
                 value={value[kelompok]?.materi ?? ""}
                 onChange={(e) => onChange(kelompok, { materi: e.target.value })}
               />
@@ -49,6 +58,7 @@ export function ClassTextForm({ value, onChange, teacherCounts }: ClassTextFormP
               <Textarea
                 id={`${kelompok}-catatan`}
                 rows={3}
+                disabled={disabled}
                 value={value[kelompok]?.catatan ?? ""}
                 onChange={(e) => onChange(kelompok, { catatan: e.target.value })}
               />

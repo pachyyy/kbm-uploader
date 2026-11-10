@@ -12,9 +12,11 @@ interface DatePickerProps {
   id?: string;
   value: Date | undefined;
   onChange: (date: Date | undefined) => void;
+  /** Frozen while a draft run is in flight: the run is filed under one date. */
+  disabled?: boolean;
 }
 
-export function DatePicker({ id, value, onChange }: DatePickerProps) {
+export function DatePicker({ id, value, onChange, disabled: locked = false }: DatePickerProps) {
   const [open, setOpen] = useState(false);
 
   // KBM sessions only ever happen on Sunday, and a report can only describe a
@@ -26,6 +28,7 @@ export function DatePicker({ id, value, onChange }: DatePickerProps) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
+        disabled={locked}
         render={
           <Button
             id={id}

@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { summarizeRun } from "@/lib/machines/draft-run";
 import type { DraftResult } from "@/lib/types";
 
 const STATUS_LABEL: Record<DraftResult["status"], string> = {
@@ -11,6 +12,7 @@ const STATUS_LABEL: Record<DraftResult["status"], string> = {
   drafted: "Draft saved",
   unconfirmed: "Unknown — check Riwayat",
   failed: "Failed",
+  already_exists: "Already in SIDIA",
 };
 
 const STATUS_VARIANT: Record<
@@ -22,6 +24,7 @@ const STATUS_VARIANT: Record<
   drafted: "default",
   unconfirmed: "secondary",
   failed: "destructive",
+  already_exists: "outline",
 };
 
 interface DraftProgressProps {
@@ -35,28 +38,22 @@ interface DraftProgressProps {
 }
 
 export function DraftProgress({ results, waiting }: DraftProgressProps) {
-  const total = results.length;
-  const done = results.filter(
-    (r) => r.status !== "pending" && r.status !== "in_progress"
-  ).length;
-  const drafted = results.filter((r) => r.status === "drafted").length;
-  const problems = results.filter(
-    (r) => r.status === "failed" || r.status === "unconfirmed"
-  );
+  const { total, done, drafted, skipped, problems: problemCount } = summarizeRun(results);
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
           Saving drafts {done}/{total} — {drafted} saved
+          {skipped > 0 && `, ${skipped} already in SIDIA`}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <Progress value={total === 0 ? 0 : (done / total) * 100} />
 
-        {problems.length > 0 && (
+        {problemCount > 0 && (
           <p className="text-sm font-medium text-destructive">
-            {problems.length} teacher{problems.length === 1 ? "" : "s"} need attention — see below.
+            {problemCount} teacher{problemCount === 1 ? "" : "s"} need attention — see below.
           </p>
         )}
 
@@ -69,7 +66,17 @@ export function DraftProgress({ results, waiting }: DraftProgressProps) {
               <div>
                 <div className="font-medium">{r.teacherName}</div>
                 <div className="text-xs text-muted-foreground">{r.kelompok}</div>
-                {r.message && <div className="text-xs text-destructive">{r.message}</div>}
+                {r.message && (
+                  <div
+                    className={
+                      r.status === "failed" || r.status === "unconfirmed"
+                        ? "text-xs text-destructive"
+                        : "text-xs text-muted-foreground"
+                    }
+                  >
+                    {r.message}
+                  </div>
+                )}
               </div>
               <Badge variant={counting ? "secondary" : STATUS_VARIANT[r.status]}>
                 {counting ? `Next in ${counting.secondsLeft}s…` : STATUS_LABEL[r.status]}

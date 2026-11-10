@@ -87,6 +87,19 @@ export async function fetchEntries(session: Session): Promise<SidiaEntry[]> {
   });
 }
 
+/**
+ * Every entry filed for one date, whatever its status. The duplicate guard
+ * before a draft run uses this: a teacher with any entry here (draft, sent or
+ * verified) must not get a second one.
+ */
+export async function fetchEntriesForDate(
+  session: Session,
+  tanggal: string
+): Promise<SidiaEntry[]> {
+  const entries = await fetchEntries(session);
+  return entries.filter((e) => e.tanggal === tanggal);
+}
+
 /** The still-unsent entries for one date — what "Send to penyuluh" acts on. */
 export async function fetchDrafts(
   session: Session,

@@ -11,9 +11,10 @@ npm run dev      # dev server on :3000
 npm run build    # production build (also the only type-check gate — tsc runs here)
 npm run start    # serve the production build
 npm run lint     # eslint (flat config, eslint-config-next)
+npm test         # vitest — the state machines in lib/machines and storeEntry's response classification
 ```
 
-There is no test suite. Verification is manual: run `npm run dev`, log in with `APP_PASSWORD`, and exercise the flow against SIDIA.
+The tests cover the pure logic only (no DOM, no live SIDIA). The end-to-end flow is still verified manually: run `npm run dev`, log in with `APP_PASSWORD`, and exercise it against SIDIA.
 
 `.env.local` (see `.env.local.example`) must define all three:
 - `SIDIA_USERNAME` / `SIDIA_PASSWORD` — the shared SIDIA account this app submits as
@@ -52,13 +53,20 @@ Interpreting the store response: a 302 **back to `/jadwal/create`** means valida
 
 `fetchEntries` pulls with `length=-1` for the same sort-order reason — any fixed window is an arbitrary slice, which would show partial dates once grouped. Filtering happens in JS on the full set.
 
+### State machines
+
+The multi-step flows are explicit reducers in `lib/machines/` (draft run, send flow, photo slot, upload phase). **[docs/state-machines.md](docs/state-machines.md) has every state and transition, the duplicate guard, and the machines that are still implicit with their known gaps — read it before touching any of these flows and update it in the same change.** Reducers are pure and ignore illegal events; add a test in `lib/machines/*.test.ts` for any transition you add.
+
 ### Draft statuses (`DraftStatus` in `lib/types.ts`)
 
 The split matters — it decides whether the UI invites a retry that would duplicate a government record:
 
 - `drafted` — stored. Terminal; excluded from any retry run.
-- `unconfirmed` — the request never came back (network drop, timeout), so whether SIDIA stored it is genuinely unknown. Also terminal for retry purposes; resolved by checking Riwayat for the date. **Never label this "failed".**
-- `failed` — SIDIA actively rejected it and created nothing. Safe to retry.
+- `unconfirmed` — we cannot tell whether SIDIA stored it: the request never came back (network drop, timeout), or SIDIA answered 5xx. Also terminal for retry purposes; resolved by checking Riwayat for the date. **Never label this "failed".** `storeEntry` reports it as `unconfirmed`, and it never throws once the POST has been sent, so `/api/draft` can tell it apart from a refusal.
+- `failed` — SIDIA actively rejected it and created nothing (or the error happened before the POST). Safe to retry.
+- `already_exists` — client-only. Before a run, the page reads SIDIA's entries for the date (`GET /api/entries`) and skips any teacher who already has one, matched by normalized name. The run fails closed if that read fails. Terminal.
+
+Draft results are tagged with the date they belong to (`resultsForDate`); inputs are locked for the whole run.
 
 ### Session-expiry retry pattern
 
@@ -69,8 +77,8 @@ Every SIDIA-backed route wraps its work in **`withSession()`** ([lib/sidia/sessi
 ### Client side
 
 - **`lib/compress.ts`** runs in the browser (canvas + `createImageBitmap`), resizing to 1600px and stepping JPEG quality down until under 450 KB — headroom under SIDIA's hard 512 KB / jpeg,jpg,png server limit. HEIC is rejected up front with a user-actionable message since browsers can't decode it.
-- **`app/page.tsx`** drafts **serially, one teacher per `/api/draft` request** (`maxDuration = 60`). Don't batch multiple teachers into one request or parallelize — a timeout mid-batch produces exactly the ambiguous state the status model is trying to avoid.
-- **Draft state is always tagged with the date it was read for** (`draftState.tanggal` in `app/page.tsx`), and treated as unknown when the tag doesn't match the picked date. Without that, switching dates mid-request lets a slow response paint one date's drafts under another — and the send button acts on whatever it is showing.
+- **`app/page.tsx`** drafts **serially, one teacher per `/api/draft` request** (`maxDuration = 60`), through `hooks/use-draft-run.ts`. Don't batch multiple teachers into one request or parallelize — a timeout mid-batch produces exactly the ambiguous state the status model is trying to avoid.
+- **Draft state is always tagged with the date it was read for** (`draftState.tanggal` in `app/page.tsx`), and treated as unknown when the tag doesn't match the picked date. Run results follow the same rule (`DraftRunState.tanggal`). Without that, switching dates mid-request lets a slow response paint one date's drafts under another — and the send button acts on whatever it is showing.
 - **`components/send-to-penyuluh.tsx`** is shared by the upload page and the Riwayat modal. It always confirms before sending, because finalizing is outward-facing and this app cannot undo it.
 - **`lib/dates.ts`** owns the date rules. `tanggal` defaults to `sundayOfWeek(new Date())` — the Sunday just passed, or today when today is a Sunday — and the picker ([components/date-picker.tsx](components/date-picker.tsx)) disables every non-Sunday and every future day, since a KBM report can only describe a Sunday class that already happened. Always format with `toYmd()`; `toISOString()` would shift the day for WIB (UTC+7) users and file the report under the wrong Sunday.
 - **`app/riwayat/page.tsx`** is the review surface: `GET /api/history` returns entries already grouped by date (newest first, capped to `MAX_DATES`), and each date opens a modal listing its entries plus a send action for whatever is still draft.

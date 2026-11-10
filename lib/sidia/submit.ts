@@ -23,10 +23,19 @@ export interface StoreInput {
   foto3: Blob;
 }
 
+/**
+ * What a store attempt can end in.
+ *  - rejected     SIDIA validated and refused; nothing was created. Safe to retry.
+ *  - unconfirmed  The POST was sent but we never got a trustworthy answer
+ *                 (connection dropped, timeout, SIDIA 5xx), so SIDIA may have
+ *                 stored the record. NOT safe to retry blindly.
+ *  - session_expired  Detected before anything was stored; the caller may replay.
+ */
 export type StoreOutcome =
   | { ok: true }
   | { ok: false; reason: "session_expired" }
-  | { ok: false; reason: "rejected"; detail: string };
+  | { ok: false; reason: "rejected"; detail: string }
+  | { ok: false; reason: "unconfirmed"; detail: string };
 
 export type FinalizeOutcome =
   | { ok: true }
@@ -101,17 +110,29 @@ export async function storeEntry(
   // Optional in the real form; send empty so the field is always present.
   form.set("link_laporan", "");
 
-  const res = await fetch(SIDIA_URLS.store, {
-    method: "POST",
-    redirect: "manual",
-    headers: {
-      accept: "text/html",
-      cookie: cookieHeader(session.cookies),
-      referer: SIDIA_URLS.create,
-      "user-agent": USER_AGENT,
-    },
-    body: form,
-  });
+  // From here on the record may exist in SIDIA, so nothing below may throw:
+  // anything that goes wrong has to be reported as a classified outcome, never
+  // as an exception the route would label "failed".
+  let res: Response;
+  try {
+    res = await fetch(SIDIA_URLS.store, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        accept: "text/html",
+        cookie: cookieHeader(session.cookies),
+        referer: SIDIA_URLS.create,
+        "user-agent": USER_AGENT,
+      },
+      body: form,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "unconfirmed",
+      detail: `The request reached SIDIA's side but no answer came back (${(err as Error).message}). Check Riwayat for this date before retrying — SIDIA may have saved it.`,
+    };
+  }
   mergeSetCookies(res, session.cookies);
 
   if (res.status !== 302) {
@@ -132,6 +153,16 @@ export async function storeEntry(
       $(".exception_title, .exception-message, h1, title").first().text().trim() ||
       $("body").text().trim().slice(0, 300);
 
+    // A 5xx means SIDIA crashed somewhere while handling the POST — possibly
+    // after writing the row. That is an unknown outcome, not a refusal.
+    if (res.status >= 500) {
+      return {
+        ok: false,
+        reason: "unconfirmed",
+        detail: `SIDIA returned ${res.status}${laravelError ? `: ${laravelError}` : ""}. It may or may not have saved this entry — check Riwayat for this date before retrying.`,
+      };
+    }
+
     return {
       ok: false,
       reason: "rejected",
@@ -146,7 +177,8 @@ export async function storeEntry(
   // redirect away from the form indicates a successful store.
   const location = res.headers.get("location") ?? "";
   if (location.includes("/jadwal/create")) {
-    const errors = await readFlashedValidationErrors(session);
+    // Best effort: the rejection is already certain, this only adds detail.
+    const errors = await readFlashedValidationErrors(session).catch(() => null);
     return {
       ok: false,
       reason: "rejected",

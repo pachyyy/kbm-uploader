@@ -47,7 +47,14 @@ export type DraftStatus =
   // instead of resubmitting.
   | "unconfirmed"
   // SIDIA actively rejected it and created nothing. Safe to retry.
-  | "failed";
+  | "failed"
+  // Client-only (/api/draft never returns it): SIDIA already holds an entry for
+  // this teacher on this date, so drafting was skipped to avoid a duplicate.
+  // Terminal for retry purposes.
+  | "already_exists";
+
+/** The statuses `/api/draft` can answer with — the outcome of one store attempt. */
+export type SubmitStatus = Extract<DraftStatus, "drafted" | "unconfirmed" | "failed">;
 
 export interface DraftResult {
   teacherId: string;

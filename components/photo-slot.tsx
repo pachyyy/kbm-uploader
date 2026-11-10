@@ -1,33 +1,29 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { ImageUpIcon, Loader2Icon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { compressPhoto, HeicUnsupportedError, type CompressResult } from "@/lib/compress";
+import { compressPhoto, type CompressResult } from "@/lib/compress";
+import { initialPhotoSlot, photoSlotReducer } from "@/lib/machines/photo-slot";
 
 interface PhotoSlotProps {
   label: string;
   onCompressed: (result: CompressResult | null) => void;
+  /** Frozen while a draft run is in flight, so what is shown is what gets uploaded. */
+  disabled?: boolean;
 }
 
-type Status =
-  | { kind: "empty" }
-  | { kind: "working" }
-  | {
-      kind: "done";
-      previewUrl: string;
-      fileName: string;
-      originalKb: number;
-      compressedKb: number;
-    }
-  | { kind: "error"; message: string };
-
-export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
+export function PhotoSlot({ label, onCompressed, disabled = false }: PhotoSlotProps) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [status, setStatus] = useState<Status>({ kind: "empty" });
+  // The slot's states and transitions live in lib/machines/photo-slot.ts.
+  const [status, dispatch] = useReducer(photoSlotReducer, initialPhotoSlot);
   const [dragging, setDragging] = useState(false);
+
+  // Identifies the latest pick. A compression that finishes after a newer pick
+  // (or after unmount) sees a different value here and discards its result.
+  const pickRef = useRef(0);
 
   // The preview URL is owned by this component, so it has to be released by
   // it too — 15 teachers x 3 photos means these add up. Kept in a ref rather
@@ -42,41 +38,54 @@ export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
     }
   }
 
-  useEffect(() => releasePreview, []);
+  useEffect(
+    () => () => {
+      pickRef.current += 1; // invalidate any compression still in flight
+      releasePreview();
+    },
+    []
+  );
 
   async function handleFile(file: File | undefined) {
-    if (!file) return;
+    if (!file || disabled) return;
 
+    const token = ++pickRef.current;
     releasePreview();
-    setStatus({ kind: "working" });
+    // The parent must stop holding the previous photo the moment a replacement
+    // is picked — otherwise a run started mid-compression would upload the old
+    // one while this slot says "Compressing…".
+    onCompressed(null);
+    dispatch({ type: "picked", token });
     try {
       const result = await compressPhoto(file);
+      if (pickRef.current !== token) return; // superseded while compressing
       // Preview the compressed blob, not the original: what is shown is then
       // literally what gets uploaded.
       const previewUrl = URL.createObjectURL(result.blob);
       previewUrlRef.current = previewUrl;
       onCompressed(result);
-      setStatus({
-        kind: "done",
+      dispatch({
+        type: "compressed",
+        token,
         previewUrl,
         fileName: file.name,
         originalKb: Math.round(result.originalBytes / 1024),
         compressedKb: Math.round(result.compressedBytes / 1024),
       });
     } catch (err) {
-      onCompressed(null);
-      const message =
-        err instanceof HeicUnsupportedError || err instanceof Error
-          ? err.message
-          : "Failed to process photo.";
-      setStatus({ kind: "error", message });
+      if (pickRef.current !== token) return;
+      dispatch({
+        type: "failed",
+        token,
+        message: err instanceof Error ? err.message : "Failed to process photo.",
+      });
     }
   }
 
   function handleRemove() {
     releasePreview();
     onCompressed(null);
-    setStatus({ kind: "empty" });
+    dispatch({ type: "removed" });
     // Without this, picking the *same* file again fires no change event and
     // the slot would silently stay empty.
     if (inputRef.current) inputRef.current.value = "";
@@ -94,6 +103,7 @@ export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
         type="file"
         accept="image/*"
         className="sr-only"
+        disabled={disabled}
         onChange={(e) => handleFile(e.target.files?.[0])}
       />
 
@@ -118,6 +128,7 @@ export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
             variant="ghost"
             size="icon-xs"
             aria-label={`Remove ${label}`}
+            disabled={disabled}
             onClick={handleRemove}
             className="absolute top-1 right-1"
           >
@@ -129,7 +140,7 @@ export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
           htmlFor={inputId}
           onDragOver={(e) => {
             e.preventDefault();
-            setDragging(true);
+            if (!disabled) setDragging(true);
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={(e) => {
@@ -140,7 +151,8 @@ export function PhotoSlot({ label, onCompressed }: PhotoSlotProps) {
           className={cn(
             "flex h-[4.25rem] cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed p-2 text-center transition-colors hover:bg-muted/50",
             dragging && "border-primary bg-muted/50",
-            status.kind === "error" && "border-destructive"
+            status.kind === "error" && "border-destructive",
+            disabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
           )}
         >
           {status.kind === "working" ? (

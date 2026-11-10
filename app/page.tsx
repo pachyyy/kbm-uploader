@@ -11,14 +11,23 @@ import { DatePicker } from "@/components/date-picker";
 import { DraftProgress } from "@/components/draft-progress";
 import { PhotoSlot } from "@/components/photo-slot";
 import { SendResults, SendToPenyuluh } from "@/components/send-to-penyuluh";
+import { useDraftRun } from "@/hooks/use-draft-run";
 import type { CompressResult } from "@/lib/compress";
 import { formatLongDate, sundayOfWeek, toYmd } from "@/lib/dates";
+import {
+  findExisting,
+  interpretDraftResponse,
+  isRunLocked,
+  resultsForDate,
+  type RosterItem,
+} from "@/lib/machines/draft-run";
+import { uploadPhase } from "@/lib/machines/upload-phase";
 import type {
   ClassText,
-  DraftResult,
   KelompokName,
   SendResult,
   SidiaEntry,
+  SubmitStatus,
   Teacher,
   TeacherAssignment,
 } from "@/lib/types";
@@ -42,8 +51,6 @@ type PhotoState = Record<string, { foto1: CompressResult | null; foto2: Compress
  */
 const DELAY_PENGIRIMAN = 5000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export default function Home() {
   // Starts null on both server and first client render (even though
   // localStorage may already have data) so the two don't disagree and
@@ -61,8 +68,10 @@ export default function Home() {
     emptyClassTextSet
   );
   const [photos, setPhotos] = useState<PhotoState>({});
-  const [results, setResults] = useState<DraftResult[]>([]);
-  const [running, setRunning] = useState(false);
+  // The draft run is a state machine (lib/machines/draft-run.ts) driven by
+  // hooks/use-draft-run.ts. Its results are tagged with the date they belong to.
+  const { state: run, start: startRun } = useDraftRun();
+  const locked = isRunLocked(run);
   // Drafts SIDIA holds for a given date, tagged with the date they were read
   // for. The tag matters: switching dates mid-request would otherwise let a
   // slow response paint the old date's drafts under the new one.
@@ -70,12 +79,6 @@ export default function Home() {
     { tanggal: string; drafts: SidiaEntry[]; error?: string } | null
   >(null);
   const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
-  // Purely cosmetic: which teacher the run is currently pacing towards, and
-  // how many seconds are left. Kept out of DraftResult so the countdown can
-  // never be mistaken for a real draft status.
-  const [waiting, setWaiting] = useState<{ teacherId: string; secondsLeft: number } | null>(
-    null
-  );
 
   useEffect(() => {
     // One-time hydration from localStorage on mount (deliberately not a
@@ -111,6 +114,10 @@ export default function Home() {
 
   const tanggal = date ? toYmd(date) : null;
 
+  // Results produced for another date say nothing about this one, so they are
+  // hidden (and ignored by a new run) rather than shown under the wrong Sunday.
+  const results = resultsForDate(run, tanggal);
+
   // What SIDIA still holds as a draft for this date is the only thing the send
   // button can trust: drafts may have been created in an earlier session, on
   // another device, or directly in SIDIA.
@@ -143,6 +150,8 @@ export default function Home() {
     teachers !== null &&
     teachers.length > 0 &&
     teachers.every((t) => assignments.some((a) => a.teacherId === t.id));
+
+  const phase = uploadPhase({ teachersLoaded: teachers !== null, loadError, mappingDone });
 
   const teacherCounts = useMemo(() => {
     const counts = {} as Record<KelompokName, number>;
@@ -189,16 +198,15 @@ export default function Home() {
     });
 
   async function draftOne(
-    teacher: Teacher,
-    kelompok: KelompokName,
+    item: RosterItem,
     forDate: string
-  ): Promise<DraftResult> {
-    const p = photos[teacher.id];
-    const text = classText[kelompok];
+  ): Promise<{ status: SubmitStatus; message?: string }> {
+    const p = photos[item.teacherId];
+    const text = classText[item.kelompok];
     const form = new FormData();
     form.set("tanggal", forDate);
-    form.set("pendidikId", teacher.id);
-    form.set("kelompok", kelompok);
+    form.set("pendidikId", item.teacherId);
+    form.set("kelompok", item.kelompok);
     form.set("jenisPembelajaran", text.jenisPembelajaran);
     form.set("materi", text.materi);
     form.set("catatan", text.catatan);
@@ -206,94 +214,53 @@ export default function Home() {
     form.set("foto2", p!.foto2!.blob, "foto2.jpg");
     form.set("foto3", p!.foto3!.blob, "foto3.jpg");
 
-    const base = { teacherId: teacher.id, teacherName: teacher.name, kelompok };
-
     try {
       const res = await fetch("/api/draft", { method: "POST", body: form });
-      const data = (await res.json()) as { status: DraftResult["status"]; message?: string };
-      return { ...base, status: data.status, message: data.message };
+      const body: unknown = await res.json().catch(() => null);
+      return interpretDraftResponse(res.status, body);
     } catch (err) {
       // The request itself never completed, so SIDIA may or may not have
       // stored the record. Never call this "failed" — that reads as safe to
       // retry, and a retry here can duplicate the entry.
       return {
-        ...base,
         status: "unconfirmed",
         message: `${(err as Error).message}. Check Riwayat for this date before retrying — this teacher may already have a draft.`,
       };
     }
   }
 
-  /** Waits DELAY_PENGIRIMAN, ticking a visible countdown on the next teacher. */
-  async function pauseBefore(nextTeacherId: string) {
-    const endsAt = Date.now() + DELAY_PENGIRIMAN;
-    let remaining = DELAY_PENGIRIMAN;
-    while (remaining > 0) {
-      setWaiting({ teacherId: nextTeacherId, secondsLeft: Math.ceil(remaining / 1000) });
-      await sleep(Math.min(1000, remaining));
-      remaining = endsAt - Date.now();
-    }
-    setWaiting(null);
+  /** Teachers that already have an entry in SIDIA for `forDate`, any status. Throws if SIDIA can't be read. */
+  async function checkExisting(forDate: string) {
+    const res = await fetch(`/api/entries?tanggal=${forDate}`);
+    const data = (await res.json().catch(() => ({}))) as {
+      entries?: SidiaEntry[];
+      error?: string;
+    };
+    if (!res.ok || !data.entries) throw new Error(data.error ?? `Server returned ${res.status}`);
+    return findExisting(teachers ?? [], data.entries);
   }
 
   async function handleDraftAll() {
     if (!teachers || !tanggal) return;
     // Snapshot the date once, so every teacher in the run is filed under the
-    // same day even if the picker changes mid-run.
+    // same day. The picker is also locked for the duration of the run.
     const forDate = tanggal;
-    setRunning(true);
     setSendResults(null);
 
-    // "unconfirmed" counts as done for retry purposes: the record may well
-    // exist in SIDIA, and a second attempt would duplicate it. Those get
-    // resolved by looking at Riwayat, not by clicking again.
-    const alreadyDone = new Set(
-      results
-        .filter((r) => r.status === "drafted" || r.status === "unconfirmed")
-        .map((r) => r.teacherId)
-    );
-
-    const queue = readyTeachers
-      .filter((t) => !alreadyDone.has(t.id))
-      .map((t) => ({
-        teacher: t,
-        kelompok: assignments.find((a) => a.teacherId === t.id)!.kelompok,
-      }));
-
-    const initial: DraftResult[] = readyTeachers.map((t) => {
-      const existing = results.find((r) => r.teacherId === t.id);
-      // Preserve both terminal states so their result (and the "check Riwayat"
-      // message) survives a retry run.
-      if (existing?.status === "drafted" || existing?.status === "unconfirmed") {
-        return existing;
-      }
-      return {
-        teacherId: t.id,
-        teacherName: t.name,
-        kelompok: assignments.find((a) => a.teacherId === t.id)!.kelompok,
-        status: "pending",
-      };
+    const roster = readyTeachers.flatMap<RosterItem>((t) => {
+      const kelompok = assignments.find((a) => a.teacherId === t.id)?.kelompok;
+      return kelompok ? [{ teacherId: t.id, teacherName: t.name, kelompok }] : [];
     });
-    setResults(initial);
 
-    for (const [i, { teacher, kelompok }] of queue.entries()) {
-      setResults((prev) =>
-        prev.map((r) => (r.teacherId === teacher.id ? { ...r, status: "in_progress" } : r))
-      );
-      const result = await draftOne(teacher, kelompok, forDate);
-      setResults((prev) => prev.map((r) => (r.teacherId === teacher.id ? result : r)));
-
-      // Space the writes out — but only between teachers, never after the
-      // last one, which would just stall the run at the finish line.
-      const next = queue[i + 1];
-      if (next) await pauseBefore(next.teacher.id);
-    }
-
-    setWaiting(null);
-    setRunning(false);
-    // Drafts just changed on SIDIA's side — re-read so the send button's count
-    // reflects them rather than what this page assumed it created.
-    await refreshDrafts();
+    await startRun({
+      tanggal: forDate,
+      roster,
+      previous: results,
+      checkExisting: () => checkExisting(forDate),
+      submit: (item) => draftOne(item, forDate),
+      afterRun: refreshDrafts,
+      pauseMs: DELAY_PENGIRIMAN,
+    });
   }
 
   function handleSent(sent: SendResult[]) {
@@ -308,18 +275,18 @@ export default function Home() {
         <p className="text-sm text-muted-foreground">Kegiatan Belajar Mengajar (KBM)</p>
       </div>
 
-      {teachers === null && loadError && (
+      {phase === "load_error" && (
         <Alert variant="destructive">
           <AlertTitle>Could not load teachers</AlertTitle>
           <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       )}
 
-      {teachers === null && !loadError && (
+      {phase === "loading" && (
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
 
-      {teachers && !mappingDone && (
+      {phase === "needs_mapping" && (
         <Alert>
           <AlertTitle>Assign teachers to classes first</AlertTitle>
           <AlertDescription className="space-y-3">
@@ -331,7 +298,7 @@ export default function Home() {
         </Alert>
       )}
 
-      {teachers && mappingDone && (
+      {phase === "ready" && teachers && (
         <>
           <Card>
             <CardHeader>
@@ -340,12 +307,17 @@ export default function Home() {
             <CardContent>
               <div className="max-w-xs space-y-1.5">
                 <Label htmlFor="tanggal">Tanggal (applies to all teachers)</Label>
-                <DatePicker id="tanggal" value={date} onChange={setDate} />
+                <DatePicker id="tanggal" value={date} onChange={setDate} disabled={locked} />
               </div>
             </CardContent>
           </Card>
 
-          <ClassTextForm value={classText} onChange={updateClassText} teacherCounts={teacherCounts} />
+          <ClassTextForm
+            value={classText}
+            onChange={updateClassText}
+            teacherCounts={teacherCounts}
+            disabled={locked}
+          />
 
           <Card>
             <CardHeader>
@@ -364,13 +336,25 @@ export default function Home() {
                       <div key={t.id} className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-4">
                         <div className="text-sm font-medium sm:col-span-1">{t.name}</div>
                         <div className="sm:col-span-1">
-                          <PhotoSlot label="Foto 1" onCompressed={(r) => setPhoto(t.id, "foto1", r)} />
+                          <PhotoSlot
+                            label="Foto 1"
+                            disabled={locked}
+                            onCompressed={(r) => setPhoto(t.id, "foto1", r)}
+                          />
                         </div>
                         <div className="sm:col-span-1">
-                          <PhotoSlot label="Foto 2" onCompressed={(r) => setPhoto(t.id, "foto2", r)} />
+                          <PhotoSlot
+                            label="Foto 2"
+                            disabled={locked}
+                            onCompressed={(r) => setPhoto(t.id, "foto2", r)}
+                          />
                         </div>
                         <div className="sm:col-span-1">
-                          <PhotoSlot label="Foto 3" onCompressed={(r) => setPhoto(t.id, "foto3", r)} />
+                          <PhotoSlot
+                            label="Foto 3"
+                            disabled={locked}
+                            onCompressed={(r) => setPhoto(t.id, "foto3", r)}
+                          />
                         </div>
                       </div>
                     ))}
@@ -391,24 +375,32 @@ export default function Home() {
               </p>
 
               <Button
-                disabled={!canDraft || running}
+                disabled={!canDraft || locked}
                 onClick={handleDraftAll}
                 className="w-full"
                 size="lg"
               >
-                {running
-                  ? "Saving drafts…"
-                  : `Save ${readyTeachers.length} draft${readyTeachers.length === 1 ? "" : "s"}`}
+                {run.phase === "checking"
+                  ? "Checking SIDIA for existing entries…"
+                  : run.phase === "drafting"
+                    ? "Saving drafts…"
+                    : run.phase === "refreshing"
+                      ? "Updating draft count…"
+                      : `Save ${readyTeachers.length} draft${readyTeachers.length === 1 ? "" : "s"}`}
               </Button>
 
               <SendToPenyuluh
                 tanggal={tanggal ?? ""}
                 dateLabel={date ? formatLongDate(date) : ""}
-                drafts={running ? null : drafts}
+                drafts={locked ? null : drafts}
                 onSent={handleSent}
                 size="lg"
                 className="w-full"
               />
+
+              {run.phase === "idle" && run.tanggal === tanggal && run.error && (
+                <p className="text-sm text-destructive">{run.error}</p>
+              )}
 
               {draftsError && (
                 <p className="text-sm text-destructive">
@@ -418,7 +410,12 @@ export default function Home() {
             </CardContent>
           </Card>
 
-          {results.length > 0 && <DraftProgress results={results} waiting={waiting} />}
+          {results.length > 0 && (
+            <DraftProgress
+              results={results}
+              waiting={run.phase === "drafting" ? run.waiting : null}
+            />
+          )}
 
           {sendResults && (
             <Card>

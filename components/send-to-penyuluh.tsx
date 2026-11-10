@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useReducer } from "react";
 import { SendIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  initialSendFlow,
+  isSendDialogOpen,
+  sendFlowReducer,
+} from "@/lib/machines/send-flow";
 import type { SendResult, SidiaEntry } from "@/lib/types";
 
 interface SendToPenyuluhProps {
@@ -34,15 +39,16 @@ export function SendToPenyuluh({
   size = "default",
   className,
 }: SendToPenyuluhProps) {
-  const [open, setOpen] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // idle → confirming → sending → idle, with failures returning to confirming.
+  // The rules live in lib/machines/send-flow.ts.
+  const [flow, dispatch] = useReducer(sendFlowReducer, initialSendFlow);
+  const sending = flow.kind === "sending";
+  const error = flow.kind === "confirming" ? flow.error : null;
 
   const count = drafts?.length ?? 0;
 
   async function handleSend() {
-    setSending(true);
-    setError(null);
+    dispatch({ type: "confirm" });
     try {
       const res = await fetch("/api/send", {
         method: "POST",
@@ -53,12 +59,10 @@ export function SendToPenyuluh({
       if (!res.ok || !data.results) {
         throw new Error(data.error ?? `Server returned ${res.status}`);
       }
-      setOpen(false);
+      dispatch({ type: "succeeded" });
       onSent(data.results);
     } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSending(false);
+      dispatch({ type: "failed", message: (err as Error).message });
     }
   }
 
@@ -69,7 +73,7 @@ export function SendToPenyuluh({
         size={size}
         className={className}
         disabled={drafts === null || count === 0 || sending}
-        onClick={() => setOpen(true)}
+        onClick={() => dispatch({ type: "open" })}
       >
         <SendIcon data-icon="inline-start" />
         {drafts === null
@@ -79,7 +83,12 @@ export function SendToPenyuluh({
             : `Send ${count} draft${count === 1 ? "" : "s"} to penyuluh`}
       </Button>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      {/* While sending, "cancel" is an illegal event and the reducer ignores it,
+          so Escape / outside-click cannot dismiss a request that is in flight. */}
+      <Dialog
+        open={isSendDialogOpen(flow)}
+        onOpenChange={(next) => !next && dispatch({ type: "cancel" })}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Send to penyuluh?</DialogTitle>
